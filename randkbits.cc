@@ -22,6 +22,8 @@
 #include <limits>
 #include <utility>
 
+#include <immintrin.h>
+
 //#undef FAST_RNG
 //#define FAST_RNG 1
 
@@ -211,6 +213,70 @@ word randomKBits4(int k) {
     return inv ? ~w : w;
 }
 
+// https://gist.github.com/zwegner/616aeac9a49a7e854c0743f2d7094791
+// variant of above with PDEP
+
+uint8_t choose_idx[8][8];
+uint8_t choose_len[8][8];
+uint8_t choose_table[1024];
+
+// Get the next value with the same number of bits
+// from https://www.chessprogramming.org/Traversing_Subsets_of_a_Set#Snoobing_the_Universe
+uint64_t snoob(uint64_t x) {
+   uint64_t smallest, ripple, ones;
+   smallest = x & -x;
+   ripple = x + smallest;
+   ones = x ^ ripple;
+   ones = (ones >> 2) / smallest;
+   return ripple | ones;
+}
+void init_tables() {
+    // Initialize n-choose-k tables
+    int offset = 0;
+    for (int i = 0; i < 8; i++) {
+        int max = 1 << i;
+        choose_len[i][0] = 1;
+        choose_idx[i][0] = offset;
+        choose_table[offset++] = 0;
+        for (int j = 1; j <= i; j++) {
+            int x = (1 << (j + 0)) - 1;
+            int c = 0;
+            choose_idx[i][j] = offset;
+            while (x < max) {
+                choose_table[offset++] = x;
+                x = snoob(x);
+                c++;
+            }
+            choose_len[i][j] = c;
+        }
+    }
+}
+word randomKBits5(int k) {
+    word min = 0;
+    word max = ~(word)0;
+    int n = 0, min_n = 0, max_n = 8 * sizeof(word);
+    while (max_n - min_n > 7) {
+        word x = randomWord();
+        x = min | (x & max);
+        n = popcount(x);
+        if (n > k) {
+            max = x;
+            max_n = n;
+        }
+        else {
+            min = x;
+            min_n = n;
+        }
+    }
+    // Fill in extra bits
+    n = max_n - min_n;
+    k = k - min_n;
+    int offset = randomWord() % choose_len[n][k];
+    word bits = choose_table[offset + choose_idx[n][k]];
+    word extra = _pdep_u64(bits, min ^ max);
+    return min | extra;
+}
+
 void time(word (*f)(int)) {
     auto start = std::clock();
     for (int k = 0; k <= BITS_PER_WORD; ++k) {
@@ -228,6 +294,8 @@ void time(word (*f)(int)) {
 }
 
 int main() {
+    init_tables();
+
     std::cout << "set random bits ";
     time(randomKBits0);
     std::cout << "shuffle         ";
@@ -238,5 +306,7 @@ int main() {
     time(randomKBits3);
     std::cout << "enumeration     ";
     time(randomKBits4);
+    std::cout << "bisection pdep  ";
+    time(randomKBits5);
     return 0;
 }
